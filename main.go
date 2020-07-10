@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"cloud.google.com/go/datastore"
+	pb "github.com/gidoBOSSftw5731/Historical-ROA/proto"
 	"github.com/gidoBOSSftw5731/log"
 	"github.com/lib/pq"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // inputROA is a Struct with all the data from the json
@@ -47,11 +49,11 @@ var (
 	stmtMap  = make(map[string]*sql.Stmt)
 	queryMap = map[string]string{"55mincheck": `SELECT inserttime FROM roas 
 	ORDER BY inserttime DESC LIMIT 1`,
-		"asnonly": `SELECT asn, prefix, mask, maxlen, ta FROM roas
+		"asnonly": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
 	WHERE asn = $1`,
-		"prefixonly": `SELECT asn, prefix, mask, maxlen, ta FROM roas
+		"prefixonly": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
 	WHERE prefix = $1 AND mask = $2`,
-		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta FROM roas
+		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
 		WHERE asn = $1 AND prefix = $2 AND mask = $3`}
 )
 
@@ -110,8 +112,13 @@ func main() {
 }
 
 func mainPage(w http.ResponseWriter, r *http.Request) {
-	tmpl := template.Must(template.ParseFiles("index.html"))
-	if r.Method != http.MethodGet {
+	tmpl, err := template.ParseFiles("./index.html")
+	if err != nil {
+		log.Errorln(err)
+		return
+	}
+
+	if r.Method != http.MethodPost {
 		tmpl.Execute(w, nil)
 		return
 	}
@@ -133,7 +140,6 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var rows *sql.Rows
-	var err error
 	switch {
 	case hasASN && !hasPrefix:
 		rows, err = stmtMap["asnonly"].Query(inputStore.Asn)
@@ -149,10 +155,31 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	
-	for rows.Next() {
+	var results pb.ResultArr
 
+	for rows.Next() {
+		var asn, prefix, ta string
+		var maxlen, mask int
+		var itime time.Time
+		if err := rows.Scan(&asn, &prefix, &mask, &maxlen, &ta, &itime); err != nil {
+			log.Errorln(err)
+			continue
+		}
+
+		log.Traceln(asn, prefix, mask, maxlen, ta, itime.Unix())
+		log.Traceln(results.Results)
+
+		results.Results = append(results.Results, &pb.ResultsFromDB{
+			ASN:      asn,
+			Prefix:   prefix,
+			Mask:     int32(mask),
+			Maxlen:   int32(maxlen),
+			Ta:       ta,
+			Unixtime: itime.Unix(),
+		})
 	}
+
+	fmt.Fprintln(w, protojson.Format(&results))
 
 }
 
@@ -160,8 +187,12 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 func convInToStored(i inputROA) storedROA {
 	// shut up I know its not correct terminology
 	ipandmask := strings.Split(i.Prefix, "/")
+
+	var mask int
 	// probably doesnt need error checking
-	mask, _ := strconv.Atoi(ipandmask[1])
+	if len(ipandmask) == 2 {
+		mask, _ = strconv.Atoi(ipandmask[1])
+	}
 
 	return storedROA{
 		Asn:       i.Asn,
