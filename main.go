@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 
 	"cloud.google.com/go/datastore"
 	"github.com/gidoBOSSftw5731/log"
+	"github.com/lib/pq"
 )
 
 // inputROA is a Struct with all the data from the json
@@ -59,16 +59,18 @@ func main() {
 		log.Tracef("using default port: %v", port)
 	}
 
+	// open SQL connection
 	var err error
-	ctx := context.Background()
-
-	// Set your Google Cloud Platform project ID.
-	projectID := "YOUR_PROJECT_ID"
-
-	// Creates a client.
-	client, err = datastore.NewClient(ctx, projectID)
+	dbpass := os.Getenv("DB_PASSWORD")
+	if dbpass == "" {
+		dbpass = "datboifff"
+	}
+	db, err = sql.Open("postgres", fmt.Sprintf("user=%v password=%v dbname=roas host=%v port=%v",
+		"postgres", dbpass, os.Getenv("DB_ADDR"), "5432"))
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		log.Fatalln(err)
+	} else if db.Ping() != nil {
+		log.Fatalln(db.Ping())
 	}
 
 	http.HandleFunc("/update", pullToDB)
@@ -82,25 +84,46 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var in []storedROA
+	// Create a DB Transaction, one atomic change with many rows inserted.
+	txn, err := db.Begin()
+	if err != nil {
+		log.Fatalf("failed to create transation: %v", err)
+	}
+
+	// Create the cursor, which gets filled with the Exec statement inside the for loop.
+	stmt, err := txn.Prepare(
+		pq.CopyIn("roas", "asn", "prefix", "maxlen", "ta", "mask"))
+	if err != nil {
+		log.Fatalf("failed to create cursor: %v", err)
+	}
+
+	//var in []storedROA
 	for _, i := range origIn.Roas {
 		// shut up I know its not correct terminology
 		ipandmask := strings.Split(i.Prefix, "/")
 		// probably doesnt need error checking
 		mask, _ := strconv.Atoi(ipandmask[1])
 
-		in = append(in, storedROA{
+		/*in = append(in, storedROA{
 			Asn:       i.Asn,
 			Prefix:    ipandmask[0],
 			MaxLength: i.MaxLength,
 			Ta:        i.Ta,
 			Subnet:    mask,
-		})
+		})*/
+
+		stmt.Exec(i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+
 	}
 
+	// All data is pending in the transaction, commit the transaction.
+	_, err = stmt.Exec()
 	if err != nil {
-		ErrorHandler(w, r, 500, "Error opening txn", err)
-		return
+		log.Fatalf("failed to commit downloaded data: %v", err)
+	}
+
+	if err := txn.Commit(); err != nil {
+		log.Fatalf("failed to commit and close the transaction: %v", err)
 	}
 
 }
