@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,6 +28,7 @@ type inputROA struct {
 	Prefix    string `json:"prefix"`
 	MaxLength int    `json:"maxLength"`
 	Ta        string `json:"ta"`
+	ParseCIDR string
 }
 
 type inputROAArr struct {
@@ -90,7 +92,7 @@ func main() {
 		dbpass = "datboifff"
 	}
 
-	dbip := os.Getenv("DB_IP")
+	dbip := os.Getenv("DB_ADDR")
 	if dbip == "" {
 		dbip = "/cloudsql/historical-roas:us-central1:history"
 	}
@@ -124,8 +126,14 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input := inputROA{
-		Asn:    r.FormValue("asn"),
-		Prefix: r.FormValue("prefix"),
+		Asn:       r.FormValue("asn"),
+		Prefix:    r.FormValue("prefix"),
+		ParseCIDR: r.FormValue("parsecidr"),
+	}
+
+	if input.ParseCIDR != "" {
+		_, n, _ := net.ParseCIDR(input.Prefix)
+		input.Prefix = n.String()
 	}
 
 	inputStore := convInToStored(input)
