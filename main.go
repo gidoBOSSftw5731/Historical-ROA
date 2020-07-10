@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"cloud.google.com/go/datastore"
 	"github.com/gidoBOSSftw5731/log"
 )
 
@@ -36,16 +39,36 @@ type storedROA struct {
 	Subnet    int
 }
 
+var (
+	client *datastore.Client
+	db     *sql.DB
+)
+
 const (
-	roaURL = "https://hosted-routinator.rarc.net/json"
+	roaURL    = "https://hosted-routinator.rarc.net/json"
+	projectID = "historical-roas"
 )
 
 func main() {
+	// enable logging
 	log.SetCallDepth(4)
+	// set http port
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
 		log.Tracef("using default port: %v", port)
+	}
+
+	var err error
+	ctx := context.Background()
+
+	// Set your Google Cloud Platform project ID.
+	projectID := "YOUR_PROJECT_ID"
+
+	// Creates a client.
+	client, err = datastore.NewClient(ctx, projectID)
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
 	http.HandleFunc("/update", pullToDB)
@@ -75,7 +98,11 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	log.Traceln(len(in))
+	if err != nil {
+		ErrorHandler(w, r, 500, "Error opening txn", err)
+		return
+	}
+
 }
 
 func downloadRARC() (*inputROAArr, error) {
@@ -108,3 +135,14 @@ func ErrorHandler(resp http.ResponseWriter, req *http.Request, status int, alert
 	fmt.Fprintf(resp, "You have found an error! This error is of type %v. Built in alert: \n'%v',\n Would you like a <a href='https://http.cat/%v'>cat</a> or a <a href='https://httpstatusdogs.com/%v'>dog?</a>",
 		status, alert, status, status)
 }
+
+/*
+create table roas (
+	asn text,
+	prefix text,
+	maxlen int,
+	ta text,
+	mask int,
+	inserttime TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+*/
