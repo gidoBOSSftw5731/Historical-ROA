@@ -1,0 +1,18 @@
+// Proto definition for API service.
+
+syntax = "proto3";
+package rarcproto;
+option go_package = ".;proto";
+
+message ResultsFromDB {
+    string ASN = 1;
+    string prefix = 2;
+    int32 maxlen  = 3;
+    string ta = 4;
+    int32 mask = 5;
+    int64 unixtime = 6;
+}
+
+message ResultArr {
+    repeated ResultsFromDB results = 1;
+}

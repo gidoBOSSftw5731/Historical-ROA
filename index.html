@@ -1,0 +1,14 @@
+<!-- index.html -->
+IDK try just picking one, trying both should be the same as an AND in principle...
+{{if .Success}}
+    <h1>Thanks for your message!</h1>
+{{else}}
+    <h1>Contact</h1>
+    <form method="GET">
+        <label>ASN:</label><br />
+        <input type="text" name="asn"><br />
+        <label>Prefix (CIDR), no IPv6 brackets:</label><br />
+        <input type="text" name="prefix"><br />
+        <input type="submit">
+    </form>
+{{end}}

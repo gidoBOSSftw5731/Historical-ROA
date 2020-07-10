@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/datastore"
 	"github.com/gidoBOSSftw5731/log"
@@ -40,14 +42,34 @@ type storedROA struct {
 }
 
 var (
-	client *datastore.Client
-	db     *sql.DB
+	client   *datastore.Client
+	db       *sql.DB
+	stmtMap  = make(map[string]*sql.Stmt)
+	queryMap = map[string]string{"55mincheck": `SELECT inserttime FROM roas 
+	ORDER BY inserttime DESC LIMIT 1`,
+		"asnonly": `SELECT asn, prefix, mask, maxlen, ta FROM roas
+	WHERE asn = $1`,
+		"prefixonly": `SELECT asn, prefix, mask, maxlen, ta FROM roas
+	WHERE prefix = $1 AND mask = $2`,
+		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta FROM roas
+		WHERE asn = $1 AND prefix = $2 AND mask = $3`}
 )
 
 const (
 	roaURL    = "https://hosted-routinator.rarc.net/json"
 	projectID = "historical-roas"
 )
+
+func defineSQLStatements() {
+
+	for i, j := range queryMap {
+		var err error
+		stmtMap[i], err = db.Prepare(j)
+		if err != nil {
+			log.Fatalln(err)
+		}
+	}
+}
 
 func main() {
 	// enable logging
@@ -65,19 +87,100 @@ func main() {
 	if dbpass == "" {
 		dbpass = "datboifff"
 	}
+
+	dbip := os.Getenv("DB_IP")
+	if dbip == "" {
+		dbip = "34.67.214.75"
+	}
+
 	db, err = sql.Open("postgres", fmt.Sprintf("user=%v password=%v dbname=roas host=%v port=%v",
-		"postgres", dbpass, os.Getenv("DB_ADDR"), "5432"))
+		"postgres", dbpass, dbip, "5432"))
 	if err != nil {
 		log.Fatalln(err)
 	} else if db.Ping() != nil {
 		log.Fatalln(db.Ping())
 	}
 
+	// prepare statements
+	defineSQLStatements()
+
 	http.HandleFunc("/update", pullToDB)
+	http.HandleFunc("/", mainPage)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
+func mainPage(w http.ResponseWriter, r *http.Request) {
+	tmpl := template.Must(template.ParseFiles("index.html"))
+	if r.Method != http.MethodGet {
+		tmpl.Execute(w, nil)
+		return
+	}
+
+	input := inputROA{
+		Asn:    r.FormValue("asn"),
+		Prefix: r.FormValue("prefix"),
+	}
+
+	inputStore := convInToStored(input)
+
+	var hasASN, hasPrefix bool
+	if inputStore.Asn != "" {
+		hasASN = true
+	}
+
+	if inputStore.Prefix != "" && inputStore.Subnet != 0 {
+		hasPrefix = true
+	}
+
+	var rows *sql.Rows
+	var err error
+	switch {
+	case hasASN && !hasPrefix:
+		rows, err = stmtMap["asnonly"].Query(inputStore.Asn)
+	case !hasASN && hasPrefix:
+		rows, err = stmtMap["prefixonly"].Query(inputStore.Prefix, inputStore.Subnet)
+	case hasASN && hasPrefix:
+		rows, err = stmtMap["prefixandasn"].Query(inputStore.Asn, inputStore.Prefix, inputStore.Subnet)
+
+	}
+
+	if err != nil {
+		ErrorHandler(w, r, 500, "lookup fail", err)
+		return
+	}
+
+	
+	for rows.Next() {
+
+	}
+
+}
+
+// convert input data into stored data
+func convInToStored(i inputROA) storedROA {
+	// shut up I know its not correct terminology
+	ipandmask := strings.Split(i.Prefix, "/")
+	// probably doesnt need error checking
+	mask, _ := strconv.Atoi(ipandmask[1])
+
+	return storedROA{
+		Asn:       i.Asn,
+		Prefix:    ipandmask[0],
+		MaxLength: i.MaxLength,
+		Ta:        i.Ta,
+		Subnet:    mask,
+	}
+}
+
 func pullToDB(w http.ResponseWriter, r *http.Request) {
+	// see if there has been an update within 55 mins
+	var lastIn time.Time
+	stmtMap["55mincheck"].QueryRow().Scan(&lastIn)
+	if lastIn.Add(55 * time.Minute).After(time.Now()) {
+		log.Traceln("Record added in last 55 mins")
+		return
+	}
+
 	origIn, err := downloadRARC()
 	if err != nil {
 		ErrorHandler(w, r, 500, "Error parsing JSON", err)
