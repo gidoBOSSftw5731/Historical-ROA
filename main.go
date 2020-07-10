@@ -92,7 +92,7 @@ func main() {
 
 	dbip := os.Getenv("DB_IP")
 	if dbip == "" {
-		dbip = "34.67.214.75"
+		dbip = "/cloudsql/historical-roas:us-central1:history"
 	}
 
 	db, err = sql.Open("postgres", fmt.Sprintf("user=%v password=%v dbname=roas host=%v port=%v",
