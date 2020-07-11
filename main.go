@@ -114,6 +114,8 @@ func main() {
 }
 
 func mainPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Strict-Transport-Security", "max-age=2629800; includeSubDomains")
+
 	tmpl, err := template.ParseFiles("./index.html")
 	if err != nil {
 		log.Errorln(err)
@@ -322,4 +324,7 @@ create table roas (
 	mask int,
 	inserttime TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+create index idx_as on roas (asn);
+create index idx_prefix_mask on roas (prefix, mask);
+create index idx_prefix_mask_asn on roas (prefix, mask, asn);
 */
