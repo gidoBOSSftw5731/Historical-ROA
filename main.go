@@ -177,13 +177,25 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		log.Traceln(asn, prefix, mask, maxlen, ta, itime.Unix())
 		log.Traceln(results.Results)
 
+		var fullprefixrange string
+		//check if I need to make fullprefixrange or not
+		switch {
+
+		case maxlen != mask:
+			fullprefixrange = fmt.Sprintf("%v/%v => %v", prefix, mask, maxlen)
+		case maxlen == mask:
+			fullprefixrange = fmt.Sprintf("%v/%v", prefix, mask)
+		}
+
 		results.Results = append(results.Results, &pb.ResultsFromDB{
-			ASN:      asn,
-			Prefix:   prefix,
-			Mask:     int32(mask),
-			Maxlen:   int32(maxlen),
-			Ta:       ta,
-			Unixtime: itime.Unix(),
+			ASN:             asn,
+			Prefix:          prefix,
+			Mask:            int32(mask),
+			Maxlen:          int32(maxlen),
+			Ta:              ta,
+			Unixtime:        itime.Unix(),
+			Fullprefix:      fmt.Sprintf("%v/%v", prefix, mask),
+			Fullprefixrange: fullprefixrange,
 		})
 	}
 

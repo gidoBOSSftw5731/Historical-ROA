@@ -11,6 +11,8 @@ message ResultsFromDB {
     string ta = 4;
     int32 mask = 5;
     int64 unixtime = 6;
+    string fullprefix = 7;
+    string fullprefixrange = 8;
 }
 
 message ResultArr {
