@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -13,10 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/datastore"
 	pb "github.com/gidoBOSSftw5731/Historical-ROA/proto"
 	"github.com/gidoBOSSftw5731/log"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -46,9 +44,9 @@ type storedROA struct {
 }
 
 var (
-	client   *datastore.Client
-	db       *sql.DB
-	stmtMap  = make(map[string]*sql.Stmt)
+	//client   *datastore.Client
+	db       *pgx.Conn
+	stmtMap  = make(map[string]*pgx.PreparedStatement)
 	queryMap = map[string]string{"55mincheck": `SELECT inserttime FROM roas 
 	ORDER BY inserttime DESC LIMIT 1`,
 		"asnonly": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
@@ -69,7 +67,7 @@ func defineSQLStatements() {
 
 	for i, j := range queryMap {
 		var err error
-		stmtMap[i], err = db.Prepare(j)
+		stmtMap[i], err = db.Prepare(i, j)
 		if err != nil {
 			log.Fatalln(err)
 		}
@@ -95,15 +93,17 @@ func main() {
 
 	dbip = os.Getenv("DB_ADDR")
 	if dbip == "" {
-		dbip = "/cloudsql/historical-roas:us-central1:history"
+		dbip = "/cloudsql/historical-roas:us-east1:history3"
 	}
 
-	db, err = sql.Open("postgres", fmt.Sprintf("user=%v password=%v dbname=roas host=%v port=%v",
-		"postgres", dbpass, dbip, "5432"))
+	db, err = pgx.Connect(pgx.ConnConfig{
+		Host:     dbip,
+		User:     "postgres",
+		Password: dbpass,
+		Database: "roas",
+	})
 	if err != nil {
 		log.Fatalln(err)
-	} else if db.Ping() != nil {
-		log.Fatalln(db.Ping())
 	}
 
 	// prepare statements
@@ -160,14 +160,14 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		hasPrefix = true
 	}
 
-	var rows *sql.Rows
+	var rows *pgx.Rows
 	switch {
 	case hasASN && !hasPrefix:
-		rows, err = stmtMap["asnonly"].Query(inputStore.Asn)
+		rows, err = db.Query(stmtMap["asnonly"].SQL, inputStore.Asn)
 	case !hasASN && hasPrefix:
-		rows, err = stmtMap["prefixonly"].Query(inputStore.Prefix, inputStore.Subnet)
+		rows, err = db.Query(stmtMap["prefixonly"].SQL, inputStore.Prefix, inputStore.Subnet)
 	case hasASN && hasPrefix:
-		rows, err = stmtMap["prefixandasn"].Query(inputStore.Asn, inputStore.Prefix, inputStore.Subnet)
+		rows, err = db.Query(stmtMap["prefixandasn"].SQL, inputStore.Asn, inputStore.Prefix, inputStore.Subnet)
 
 	}
 
@@ -237,19 +237,19 @@ func convInToStored(i inputROA) storedROA {
 }
 
 func pullToDB(w http.ResponseWriter, r *http.Request) {
-	// this is stupid, but it seems like the DB fails to insert
-	// if it is left idle
-	db, err := sql.Open("postgres", fmt.Sprintf("user=%v password=%v dbname=roas host=%v port=%v",
-		"postgres", dbpass, dbip, "5432"))
+	db, err := pgx.Connect(pgx.ConnConfig{
+		Host:     dbip,
+		User:     "postgres",
+		Password: dbpass,
+		Database: "roas",
+	})
 	if err != nil {
 		log.Fatalln(err)
-	} else if db.Ping() != nil {
-		log.Fatalln(db.Ping())
 	}
 
 	// see if there has been an update within 55 mins
 	var lastIn time.Time
-	stmtMap["55mincheck"].QueryRow().Scan(&lastIn)
+	db.QueryRow(stmtMap["55mincheck"].SQL).Scan(&lastIn)
 	if lastIn.Add(55 * time.Minute).After(time.Now()) {
 		log.Traceln("Record added in last 55 mins")
 		return
@@ -268,12 +268,13 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the cursor, which gets filled with the Exec statement inside the for loop.
-	stmt, err := txn.Prepare(
-		pq.CopyIn("roas", "asn", "prefix", "maxlen", "ta", "mask"))
+	stmt, err := txn.Prepare("insertvals",
+		"INSERT INTO roas(asn, prefix, maxlen, ta, mask) VALUES ($1, $2, $3, $4, $5)")
 	if err != nil {
 		log.Fatalf("failed to create cursor: %v", err)
 	}
 
+	var debug uint
 	//var in []storedROA
 	for _, i := range origIn.Roas {
 		// shut up I know its not correct terminology
@@ -288,16 +289,18 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Ta:        i.Ta,
 			Subnet:    mask,
 		})*/
+		txn.Exec(stmt.SQL, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
 
-		stmt.Exec(i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+		go log.Traceln(debug)
+		debug++
 
 	}
 
 	// All data is pending in the transaction, commit the transaction.
-	_, err = stmt.Exec()
-	if err != nil {
-		log.Fatalf("failed to commit downloaded data: %v", err)
-	}
+	//_, err = stmt.Exec()
+	//if err != nil {
+	//		log.Fatalf("failed to commit downloaded data: %v", err)
+	//	}
 
 	if err := txn.Commit(); err != nil {
 		log.Fatalf("failed to commit and close the transaction: %v", err)
