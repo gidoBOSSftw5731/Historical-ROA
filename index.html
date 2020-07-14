@@ -17,6 +17,20 @@ IDK try just picking one, trying both should be the same as an AND in principle.
     </form>
 {{end}}
 
+<script>
+document.onload = function httpGetAsync(theUrl, callback)
+{
+    var xmlHttp = new XMLHttpRequest();
+    xmlHttp.onreadystatechange = function() { 
+        if (xmlHttp.readyState == 4 && xmlHttp.status == 200)
+            callback(xmlHttp.responseText);
+    }
+    xmlHttp.open("GET", window.location.pathName+'/hsts', true); // true for asynchronous 
+    xmlHttp.send(null);
+    console.log("hsts page loaded")
+}
+</script>
+
 <footer>
 <a href="https://cleckley.click/hroas"> Find me on Github! https://cleckley.click/hroas</a>
 </footer>

@@ -57,6 +57,7 @@ var (
 	WHERE prefix = $1 AND mask = $2`,
 		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
 		WHERE asn = $1 AND prefix = $2 AND mask = $3`}
+	dbpass, dbip string
 )
 
 const (
@@ -87,12 +88,12 @@ func main() {
 
 	// open SQL connection
 	var err error
-	dbpass := os.Getenv("DB_PASSWORD")
+	dbpass = os.Getenv("DB_PASSWORD")
 	if dbpass == "" {
 		dbpass = "datboifff"
 	}
 
-	dbip := os.Getenv("DB_ADDR")
+	dbip = os.Getenv("DB_ADDR")
 	if dbip == "" {
 		dbip = "/cloudsql/historical-roas:us-central1:history"
 	}
@@ -110,11 +111,21 @@ func main() {
 
 	http.HandleFunc("/update", pullToDB)
 	http.HandleFunc("/", mainPage)
+	http.HandleFunc("/hsts", hsts)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
+func hsts(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("strict-transport-security", "max-age=2629800")
+	// If the X-Forwarded-Proto was set upstream as HTTP, then the request came in without TLS.
+	if r.Header.Get("X-Forwarded-Proto") == "http" || r.URL.Scheme != "https" {
+		r.URL.Scheme = "https"
+		http.Redirect(w, r, r.URL.String(), http.StatusMovedPermanently)
+	}
+}
+
 func mainPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Strict-Transport-Security", "max-age=2629800; includeSubDomains")
+	w.Header().Add("strict-transport-security", "max-age=2629800")
 
 	tmpl, err := template.ParseFiles("./index.html")
 	if err != nil {
@@ -226,6 +237,16 @@ func convInToStored(i inputROA) storedROA {
 }
 
 func pullToDB(w http.ResponseWriter, r *http.Request) {
+	// this is stupid, but it seems like the DB fails to insert
+	// if it is left idle
+	db, err := sql.Open("postgres", fmt.Sprintf("user=%v password=%v dbname=roas host=%v port=%v",
+		"postgres", dbpass, dbip, "5432"))
+	if err != nil {
+		log.Fatalln(err)
+	} else if db.Ping() != nil {
+		log.Fatalln(db.Ping())
+	}
+
 	// see if there has been an update within 55 mins
 	var lastIn time.Time
 	stmtMap["55mincheck"].QueryRow().Scan(&lastIn)
@@ -281,6 +302,8 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	if err := txn.Commit(); err != nil {
 		log.Fatalf("failed to commit and close the transaction: %v", err)
 	}
+
+	db.Close()
 
 }
 
