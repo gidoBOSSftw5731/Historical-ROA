@@ -23,3 +23,7 @@
 *.test
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+**/cloudsql/**
+**/cloud_sql_proxy/**
+**/.s.PGSQL.5432
+cloudsql/**/.s.PGSQL.5432
