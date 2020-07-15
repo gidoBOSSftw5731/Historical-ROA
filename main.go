@@ -252,8 +252,16 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow(stmtMap["55mincheck"].SQL).Scan(&lastIn)
 	if lastIn.Add(55 * time.Minute).After(time.Now()) {
 		log.Traceln("Record added in last 55 mins")
+		ErrorHandler(w, r, 401, "already done", nil)
 		return
 	}
+	w.WriteHeader(200)
+	fmt.Fprintln(w, "ok")
+	http.Error(w, "can't hijack rw", 200)
+	hj, _ := w.(http.Hijacker)
+	conn, _, _ := hj.Hijack()
+	conn.Close()
+	log.Debugln("starting update")
 
 	origIn, err := downloadRARC()
 	if err != nil {
@@ -289,9 +297,13 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Ta:        i.Ta,
 			Subnet:    mask,
 		})*/
-		txn.Exec(stmt.SQL, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+		_, err = txn.Exec(stmt.SQL, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+		if err != nil {
+			log.Errorln(err)
+			continue
+		}
 
-		go log.Traceln(debug)
+		//go log.Traceln(debug)
 		debug++
 
 	}
@@ -301,6 +313,11 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	//if err != nil {
 	//		log.Fatalf("failed to commit downloaded data: %v", err)
 	//	}
+
+	_, err = txn.Exec(";")
+	if err != nil {
+		log.Errorln(err)
+	}
 
 	if err := txn.Commit(); err != nil {
 		log.Fatalf("failed to commit and close the transaction: %v", err)
