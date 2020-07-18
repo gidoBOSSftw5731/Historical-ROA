@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gidoBOSSftw5731/Historical-ROA/movefromoldtonew"
 	pb "github.com/gidoBOSSftw5731/Historical-ROA/proto"
 	"github.com/gidoBOSSftw5731/log"
 	"github.com/jackc/pgx"
@@ -116,6 +117,7 @@ func main() {
 	http.HandleFunc("/update", pullToDB)
 	http.HandleFunc("/", mainPage)
 	http.HandleFunc("/hsts", hsts)
+	http.HandleFunc("/aaaaaaaaaaaaaaaa", movefromoldtonew.Main())
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
