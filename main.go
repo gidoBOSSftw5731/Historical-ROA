@@ -117,7 +117,7 @@ func main() {
 	http.HandleFunc("/update", pullToDB)
 	http.HandleFunc("/", mainPage)
 	http.HandleFunc("/hsts", hsts)
-	http.HandleFunc("/aaaaaaaaaaaaaaaa", movefromoldtonew.Main())
+	http.HandleFunc("/aaaaaaaaaaaaaaaa", movefromoldtonew.Main)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 

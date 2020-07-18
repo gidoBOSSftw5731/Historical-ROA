@@ -15,12 +15,6 @@ import (
 func Main(w http.ResponseWriter, r *http.Request) {
 
 	log.SetCallDepth(4)
-	// set http port
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8081"
-		log.Tracef("using default port: %v", port)
-	}
 
 	http.Error(w, "can't hijack rw", 200)
 	hj, _ := w.(http.Hijacker)
@@ -73,7 +67,7 @@ func Main(w http.ResponseWriter, r *http.Request) {
 		update          bool
 	}
 	var debug int
-	var buf, buf2 []temp
+	var buf []temp
 	for _, t := range times {
 		println(debug)
 
@@ -91,43 +85,43 @@ func Main(w http.ResponseWriter, r *http.Request) {
 		debug++
 	}
 
+	/*	debug = 0
+		for _, b := range buf {
+			debug++
+			println(debug)
+			err = db.QueryRow("SELECT FROM roas WHERE asn = $1 AND prefix = $2 AND mask = $3 AND ta = $4 AND maxlen = $5",
+				b.asn, b.prefix, b.mask, b.ta, b.maxlen).Scan()
+			println("foo2")
+			switch err {
+			case pgx.ErrNoRows:
+				b.update = true
+			case nil:
+				b.update = false
+			default:
+				log.Fatalln("query failed", err)
+			}
+			buf2 = append(buf2, b)
+		}*/
+
 	debug = 0
-	for _, b := range buf {
+	for _, r := range buf {
 		debug++
 		println(debug)
-		err = db.QueryRow("SELECT FROM roas WHERE asn = $1 AND prefix = $2 AND mask = $3 AND ta = $4 AND maxlen = $5",
-			b.asn, b.prefix, b.mask, b.ta, b.maxlen).Scan()
-		println("foo2")
-		switch err {
-		case pgx.ErrNoRows:
-			b.update = true
-		case nil:
-			b.update = false
-		default:
-			log.Fatalln("query failed", err)
+
+		ra, err := txn.Exec(`UPDATE roas_arr
+		SET inserttimes = unnest(array_append(inserttimes, $1))
+		WHERE asn = $2 AND prefix = $3 AND maxlen = $4 AND ta = $5 AND mask = $6`,
+			r.t, r.asn, r.prefix, r.maxlen, r.ta, r.mask)
+		if err != nil {
+			log.Fatalln(err)
 		}
-		buf2 = append(buf2, b)
-	}
 
-	debug = 0
-	for _, r := range buf2 {
-		debug++
-		println(debug)
-
-		switch r.update {
-		case false:
+		switch ra.RowsAffected() {
+		case 0:
 			_, err = txn.Exec(`INSERT INTO roas_arr(asn, prefix, maxlen, ta, mask, inserttimes)
 			VALUES ($1, $2, $3, $4, $5, $6)`,
 				r.asn, r.prefix, r.maxlen,
 				r.ta, r.mask, []time.Time{r.t})
-			if err != nil {
-				log.Fatalln(err)
-			}
-		case true:
-			_, err = txn.Exec(`UPDATE roas_arr
-			SET inserttimes = unnest(array_append(inserttimes, $1))
-			WHERE asn = $2 AND prefix = $3 AND maxlen = $4 AND ta = $5 AND mask = $6`,
-				r.t, r.asn, r.prefix, r.maxlen, r.ta, r.mask)
 			if err != nil {
 				log.Fatalln(err)
 			}
