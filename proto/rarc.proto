@@ -10,10 +10,22 @@ message ResultsFromDB {
     int32 maxlen  = 3;
     string ta = 4;
     int32 mask = 5;
-    int64 unixtime = 6;
+    repeated int64 unixtimearr = 9;
     string fullprefix = 7;
     string fullprefixrange = 8;
 }
+
+message ResultsFromDBRFC3339 {
+    string ASN = 1;
+    string prefix = 2;
+    int32 maxlen  = 3;
+    string ta = 4;
+    int32 mask = 5;
+    repeated string time = 6;
+    string fullprefix = 7;
+    string fullprefixrange = 8;
+}
+
 
 message ResultArr {
     repeated ResultsFromDB results = 1;

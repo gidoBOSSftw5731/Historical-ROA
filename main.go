@@ -47,14 +47,18 @@ var (
 	//client   *datastore.Client
 	db       *pgx.Conn
 	stmtMap  = make(map[string]*pgx.PreparedStatement)
-	queryMap = map[string]string{"55mincheck": `SELECT inserttime FROM roas 
-	ORDER BY inserttime DESC LIMIT 1`,
-		"asnonly": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
+	queryMap = map[string]string{"55mincheck": `SELECT time FROM last_modified`,
+		"asnonly": `SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM roas_arr
 	WHERE asn = $1`,
-		"prefixonly": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
+		"prefixonly": `SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM roas_arr
 	WHERE prefix = $1 AND mask = $2`,
-		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta, inserttime FROM roas
-		WHERE asn = $1 AND prefix = $2 AND mask = $3`}
+		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM roas_arr
+		WHERE asn = $1 AND prefix = $2 AND mask = $3`,
+		"updatearray": `UPDATE roas_arr
+	SET inserttimes = array_append(inserttimes, $1)
+	WHERE asn = $2 AND prefix = $3 AND maxlen = $4 AND ta = $5 AND mask = $6`,
+		"insertarray": `INSERT INTO roas_arr(asn, prefix, maxlen, ta, mask, inserttimes)
+	VALUES ($1, $2, $3, $4, $5, $6)`}
 	dbpass, dbip string
 )
 
@@ -160,6 +164,8 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		hasPrefix = true
 	}
 
+	log.Traceln(input)
+
 	var rows *pgx.Rows
 	switch {
 	case hasASN && !hasPrefix:
@@ -168,51 +174,38 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		rows, err = db.Query(stmtMap["prefixonly"].SQL, inputStore.Prefix, inputStore.Subnet)
 	case hasASN && hasPrefix:
 		rows, err = db.Query(stmtMap["prefixandasn"].SQL, inputStore.Asn, inputStore.Prefix, inputStore.Subnet)
-
 	}
-
 	if err != nil {
 		ErrorHandler(w, r, 500, "lookup fail", err)
 		return
 	}
 
-	var results pb.ResultArr
-
+	var resultsarr pb.ResultArr
 	for rows.Next() {
-		var asn, prefix, ta string
-		var maxlen, mask int
-		var itime time.Time
-		if err := rows.Scan(&asn, &prefix, &mask, &maxlen, &ta, &itime); err != nil {
-			log.Errorln(err)
-			continue
+		var results pb.ResultsFromDB
+		// asn, prefix, mask, maxlen, ta, inserttimes
+		var intime []time.Time
+		err = rows.Scan(&results.ASN, &results.Prefix, &results.Mask, &results.Maxlen, &results.Ta, &intime)
+		if err != nil {
+			ErrorHandler(w, r, 500, "idk couldnt convert sql to obj", err)
+			return
+		}
+		for _, i := range intime {
+			results.Unixtimearr = append(results.Unixtimearr, (i.Unix()))
 		}
 
-		log.Traceln(asn, prefix, mask, maxlen, ta, itime.Unix())
-		log.Traceln(results.Results)
-
-		var fullprefixrange string
-		//check if I need to make fullprefixrange or not
+		results.Fullprefix = fmt.Sprintf("%v/%v", results.Prefix, results.Mask)
 		switch {
-
-		case maxlen != mask:
-			fullprefixrange = fmt.Sprintf("%v/%v => %v", prefix, mask, maxlen)
-		case maxlen == mask:
-			fullprefixrange = fmt.Sprintf("%v/%v", prefix, mask)
+		case results.Maxlen != results.Mask:
+			results.Fullprefixrange = fmt.Sprintf("%v/%v => %v",
+				results.Prefix, results.Mask, results.Maxlen)
+		case results.Maxlen == results.Mask:
+			results.Fullprefixrange = fmt.Sprintf("%v/%v", results.Prefix, results.Mask)
 		}
 
-		results.Results = append(results.Results, &pb.ResultsFromDB{
-			ASN:             asn,
-			Prefix:          prefix,
-			Mask:            int32(mask),
-			Maxlen:          int32(maxlen),
-			Ta:              ta,
-			Unixtime:        itime.Unix(),
-			Fullprefix:      fmt.Sprintf("%v/%v", prefix, mask),
-			Fullprefixrange: fullprefixrange,
-		})
+		resultsarr.Results = append(resultsarr.Results, &results)
 	}
-
-	fmt.Fprintln(w, protojson.Format(&results))
+	fmt.Fprintln(w, protojson.Format(&resultsarr))
 
 }
 
@@ -276,13 +269,20 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the cursor, which gets filled with the Exec statement inside the for loop.
-	stmt, err := txn.Prepare("insertvals",
-		"INSERT INTO roas(asn, prefix, maxlen, ta, mask) VALUES ($1, $2, $3, $4, $5)")
+	// yes I dont need to prepare this in advance, it just looks neater to all put it down here.
+	ustmt, err := txn.Prepare("updatevals",
+		stmtMap["updatearray"].SQL)
+	if err != nil {
+		log.Fatalf("failed to create cursor: %v", err)
+	}
+	istmt, err := txn.Prepare("insertvals",
+		stmtMap["insertarray"].SQL)
 	if err != nil {
 		log.Fatalf("failed to create cursor: %v", err)
 	}
 
-	var debug uint
+	now := time.Now()
+	//var debug uint
 	//var in []storedROA
 	for _, i := range origIn.Roas {
 		// shut up I know its not correct terminology
@@ -297,14 +297,24 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Ta:        i.Ta,
 			Subnet:    mask,
 		})*/
-		_, err = txn.Exec(stmt.SQL, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+		ra, err := txn.Exec(ustmt.SQL, now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
 		if err != nil {
 			log.Errorln(err)
 			continue
 		}
+		if ra.RowsAffected() == 0 {
+			log.Debugln("Insertting row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+			// asn, prefix, maxlen, ta, mask, inserttimes
+			_, err = txn.Exec(istmt.SQL, i.Asn, ipandmask[0], i.MaxLength,
+				i.Ta, mask, []time.Time{now})
+			if err != nil {
+				log.Errorln(err)
+				continue
+			}
+		}
 
 		//go log.Traceln(debug)
-		debug++
+		//debug++
 
 	}
 
@@ -314,6 +324,11 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	//		log.Fatalf("failed to commit downloaded data: %v", err)
 	//	}
 
+	// I am not bothering to pre-prepare this
+	txn.Exec("UPDATE last_modified SET time = $1;", now)
+
+	// idk I used this in legacy code using database/sql and this fixed it, it has no
+	// performance penalty so I frankly dont care
 	_, err = txn.Exec(";")
 	if err != nil {
 		log.Errorln(err)
@@ -359,15 +374,19 @@ func ErrorHandler(resp http.ResponseWriter, req *http.Request, status int, alert
 }
 
 /*
-create table roas (
+; modified to save storage
+create table roas_arr (
 	asn text,
 	prefix text,
 	maxlen int,
 	ta text,
 	mask int,
-	inserttime TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	inserttimes TIMESTAMP WITHOUT TIME ZONE[]
 );
-create index idx_as on roas (asn);
-create index idx_prefix_mask on roas (prefix, mask);
-create index idx_prefix_mask_asn on roas (prefix, mask, asn);
+create table last_modified (
+	time TIMESTAMP WITHOUT TIME ZONE
+);
+create index idx_as on roas_arr (asn);
+create index idx_prefix_mask on roas_arr (prefix, mask);
+create index idx_prefix_mask_asn on roas_arr (prefix, mask, asn);
 */
