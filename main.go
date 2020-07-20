@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gidoBOSSftw5731/Historical-ROA/movefromoldtonew"
 	pb "github.com/gidoBOSSftw5731/Historical-ROA/proto"
 	"github.com/gidoBOSSftw5731/log"
 	"github.com/jackc/pgx"
@@ -98,7 +97,7 @@ func main() {
 
 	dbip = os.Getenv("DB_ADDR")
 	if dbip == "" {
-		dbip = "/cloudsql/historical-roas:us-east1:history3"
+		dbip = "/cloudsql/historical-roas:us-east1:history4"
 	}
 
 	db, err = pgx.Connect(pgx.ConnConfig{
@@ -117,7 +116,7 @@ func main() {
 	http.HandleFunc("/update", pullToDB)
 	http.HandleFunc("/", mainPage)
 	http.HandleFunc("/hsts", hsts)
-	http.HandleFunc("/aaaaaaaaaaaaaaaa", movefromoldtonew.Main)
+	//http.HandleFunc("/aaaaaaaaaaaaaaaa", movefromoldtonew.Main)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
