@@ -14,10 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shomali11/util/xhashes"
+
 	"cloud.google.com/go/bigquery"
 	pb "github.com/gidoBOSSftw5731/Historical-ROA/proto"
 	"github.com/gidoBOSSftw5731/log"
-	"github.com/shomali11/util/xhashes"
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -198,7 +199,7 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := job.Wait(ctx)
+	status, _ := job.Wait(ctx)
 	if err := status.Err(); err != nil {
 		ErrorHandler(w, r, 500, "Error with query", err)
 		return
@@ -286,7 +287,7 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	}
 	lastIn := time_row[0].(time.Time)
 
-	if lastIn.Add(55 * time.Minute).After(time.Now()) {
+	if lastIn.Add(55 * time.Minute).Before(time.Now()) {
 		log.Traceln("Record added in last 55 mins")
 		ErrorHandler(w, r, 401, "already done", nil)
 		return
@@ -304,20 +305,29 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		ErrorHandler(w, r, 500, "Error parsing JSON", err)
 		return
 	}
+	ctx := context.Background()
 
-	inserter := client.Dataset("historical-roas:historical").Table("roas_arr").Inserter()
+	inserter := client.Dataset("historical").Table("roas_arr").Inserter()
 
+	schema, err := bigquery.InferSchema(storedROAWithTime{})
+	if err != nil {
+		ErrorHandler(w, r, 500, "Cant get last edit time", err)
+		return
+	}
+
+	schema = schema.Relax()
+
+	//query and dump to map
 	var stored = make(map[string]struct{})
 
 	currentQuery := client.Query(`SELECT asn, ta, prefix, mask, maxlen FROM historical-roas.historical.roas_arr`)
-	ctx := context.Background()
 	job, err := currentQuery.Run(ctx)
 	if err != nil {
 		ErrorHandler(w, r, 500, "Error with query", err)
 		return
 	}
 
-	status, err := job.Wait(ctx)
+	status, _ := job.Wait(ctx)
 	if err := status.Err(); err != nil {
 		ErrorHandler(w, r, 500, "Error with query", err)
 		return
@@ -328,7 +338,6 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		ErrorHandler(w, r, 500, "Error with query", err)
 		return
 	}
-	var schema bigquery.Schema
 
 	for {
 		var row []bigquery.Value
@@ -348,20 +357,11 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Mask:   int32(row[3].(int64)), // google, you are
 			Maxlen: int32(row[4].(int64)), // disgusting
 		}))] = struct{}{}
-
-		if schema == nil {
-
-			schema, err = bigquery.InferSchema(storedROAWithTime{})
-			if err != nil {
-				log.Errorln(err)
-				schema = nil
-			}
-		}
 	}
 
 	now := []time.Time{time.Now()}
 	var id int
-	//var in []storedROA
+	var in []*storedROAWithTime
 	for _, i := range origIn.Roas {
 		id++
 		// shut up I know its not correct terminology
@@ -376,7 +376,6 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Ta:        i.Ta,
 			Subnet:    mask,
 		})*/
-		ctx := context.Background()
 
 		switch _, ok := stored[xhashes.MD5(fmt.Sprint(pb.ResultsFromDB{
 			ASN:    i.Asn,
@@ -388,49 +387,46 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		case true:
 			log.Traceln("Updating row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
 			// is already stored
-			q := client.Query(`UPDATE historical-roas.historical.roas_arr
-			SET inserttimes = ARRAY_CONCAT(inserttimes, @now) WHERE
-			asn = @asn AND
-			ta = @ta AND
-			prefix = @prefix AND
-			mask = @mask AND
-			maxlen = @maxlen`)
-			q.Parameters = []bigquery.QueryParameter{
-				{
-					Name:  "asn",
-					Value: i.Asn,
-				},
-				{
-					Name:  "prefix",
-					Value: ipandmask[0],
-				},
-				{
-					Name:  "mask",
-					Value: mask,
-				},
-				{
-					Name:  "ta",
-					Value: i.Ta,
-				}, {
-					Name:  "maxlen",
-					Value: i.MaxLength,
-				},
-				{
-					Name:  "now",
-					Value: now,
-				},
-			}
-			job, err := q.Run(ctx)
-			if err != nil {
-				ErrorHandler(w, r, 500, "Error with query", err)
-				continue
-			}
+			in = append(in, &storedROAWithTime{i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask, now})
+			/*
+				q := client.Query(`UPDATE historical-roas.historical.roas_arr
+				SET inserttimes = ARRAY_CONCAT(inserttimes, @now) WHERE
+				asn = @asn AND
+				ta = @ta AND
+				prefix = @prefix AND
+				mask = @mask AND
+				maxlen = @maxlen`)
+				q.Parameters = []bigquery.QueryParameter{
+					{
+						Name:  "asn",
+						Value: i.Asn,
+					},
+					{
+						Name:  "prefix",
+						Value: ipandmask[0],
+					},
+					{
+						Name:  "mask",
+						Value: mask,
+					},
+					{
+						Name:  "ta",
+						Value: i.Ta,
+					}, {
+						Name:  "maxlen",
+						Value: i.MaxLength,
+					},
+					{
+						Name:  "now",
+						Value: now,
+					},
+				}
 
-			status, _ := job.Wait(ctx)
-			if err := status.Err(); err != nil {
-				ErrorHandler(w, r, 500, "Error with query", err)
-				continue
-			}
+				_, err := q.Run(ctx)
+				if err != nil {
+					ErrorHandler(w, r, 500, "Error with query", err)
+					return
+				}*/
 		case false:
 			log.Debugln("Insertting row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
 			// asn, prefix, maxlen, ta, mask, inserttimes
@@ -448,7 +444,7 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			})
 			if err != nil {
 				log.Errorln(err)
-				continue
+				return
 			}
 		}
 
@@ -456,6 +452,63 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		//debug++
 
 	}
+
+	log.Traceln("making buf table")
+	// make buf table
+
+	client.Dataset("historical").Table("buf").Delete(ctx)
+	err = client.Dataset("historical").Table("buf").Create(ctx,
+		&bigquery.TableMetadata{Schema: schema})
+	if err != nil {
+		ErrorHandler(w, r, 500, "error putting updates", err)
+		return
+	}
+
+	tmpinserter := client.Dataset("historical").Table("buf").Inserter()
+
+	var divided [][]*storedROAWithTime
+	chunk := 1000
+	for i := 0; i < len(in); i += chunk {
+		end := i + chunk
+		if end > len(in) {
+			end = len(in)
+		}
+		divided = append(divided, in[i:end])
+	}
+	for _, i := range divided {
+		err = tmpinserter.Put(ctx, i)
+		if err != nil {
+			ErrorHandler(w, r, 500, "error putting updates", err)
+			continue
+		}
+	}
+
+	// now make one plus one equal 2
+	// historical-roas.historical.roas_arr
+	query = client.Query(`MERGE historical-roas.historical.roas_arr arr
+	USING historical-roas.historical.buf b
+	ON 	b.Asn = arr.asn AND arr.maxlen = b.MaxLength
+	AND b.Prefix = arr.prefix AND arr.ta = b.Ta
+	AND b.Subnet = arr.mask
+WHEN MATCHED THEN
+  UPDATE SET inserttimes = ARRAY_CONCAT(b.times, arr.inserttimes)`)
+	job, err = query.Run(ctx)
+	if err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+	}
+	status, _ = job.Wait(ctx)
+	if err := status.Err(); err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
+	}
+
+	_, err = job.Read(ctx)
+	if err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
+	}
+
+	log.Debugln("done updating")
 
 }
 
