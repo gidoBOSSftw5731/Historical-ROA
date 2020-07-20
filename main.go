@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -12,9 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/bigquery"
 	pb "github.com/gidoBOSSftw5731/Historical-ROA/proto"
 	"github.com/gidoBOSSftw5731/log"
-	"github.com/jackc/pgx"
+	"github.com/shomali11/util/xhashes"
+	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -43,40 +47,38 @@ type storedROA struct {
 	Subnet    int
 }
 
+type storedROAWithTime struct {
+	Asn       string `json:"asn"`
+	Prefix    string `json:"prefix"`
+	MaxLength int    `json:"maxLength"`
+	Ta        string `json:"ta"`
+	Subnet    int
+	Times     []time.Time
+}
+
+// google cloud credentials file
+type Creds struct {
+	AuthProviderX509CertURL string `json:"auth_provider_x509_cert_url"`
+	AuthURI                 string `json:"auth_uri"`
+	ClientEmail             string `json:"client_email"`
+	ClientID                string `json:"client_id"`
+	ClientX509CertURL       string `json:"client_x509_cert_url"`
+	PrivateKey              string `json:"private_key"`
+	PrivateKeyID            string `json:"private_key_id"`
+	ProjectID               string `json:"project_id"`
+	TokenURI                string `json:"token_uri"`
+	Type                    string `json:"type"`
+}
+
 var (
-	//client   *datastore.Client
-	db       *pgx.Conn
-	stmtMap  = make(map[string]*pgx.PreparedStatement)
-	queryMap = map[string]string{"55mincheck": `SELECT time FROM last_modified`,
-		"asnonly": `SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM roas_arr
-	WHERE asn = $1`,
-		"prefixonly": `SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM roas_arr
-	WHERE prefix = $1 AND mask = $2`,
-		"prefixandasn": `SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM roas_arr
-		WHERE asn = $1 AND prefix = $2 AND mask = $3`,
-		"updatearray": `UPDATE roas_arr
-	SET inserttimes = array_append(inserttimes, $1)
-	WHERE asn = $2 AND prefix = $3 AND maxlen = $4 AND ta = $5 AND mask = $6`,
-		"insertarray": `INSERT INTO roas_arr(asn, prefix, maxlen, ta, mask, inserttimes)
-	VALUES ($1, $2, $3, $4, $5, $6)`}
-	dbpass, dbip string
+	client *bigquery.Client
+	gcreds Creds
 )
 
 const (
 	roaURL    = "https://hosted-routinator.rarc.net/json"
 	projectID = "historical-roas"
 )
-
-func defineSQLStatements() {
-
-	for i, j := range queryMap {
-		var err error
-		stmtMap[i], err = db.Prepare(i, j)
-		if err != nil {
-			log.Fatalln(err)
-		}
-	}
-}
 
 func main() {
 	// enable logging
@@ -88,30 +90,25 @@ func main() {
 		log.Tracef("using default port: %v", port)
 	}
 
-	// open SQL connection
-	var err error
-	dbpass = os.Getenv("DB_PASSWORD")
-	if dbpass == "" {
-		dbpass = "datboifff"
+	gcredsPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if gcredsPath == "" {
+		gcredsPath = "./Historical-ROAs-02210e643954.json"
 	}
-
-	dbip = os.Getenv("DB_ADDR")
-	if dbip == "" {
-		dbip = "/cloudsql/historical-roas:us-east1:history4"
-	}
-
-	db, err = pgx.Connect(pgx.ConnConfig{
-		Host:     dbip,
-		User:     "postgres",
-		Password: dbpass,
-		Database: "roas",
-	})
+	gc, err := ioutil.ReadFile(gcredsPath)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	// prepare statements
-	defineSQLStatements()
+	err = json.Unmarshal(gc, &gcreds)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// open bigquery connection
+	client, err = bigquery.NewClient(context.Background(), gcreds.ProjectID)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	http.HandleFunc("/update", pullToDB)
 	http.HandleFunc("/", mainPage)
@@ -130,6 +127,7 @@ func hsts(w http.ResponseWriter, r *http.Request) {
 }
 
 func mainPage(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
 	w.Header().Add("strict-transport-security", "max-age=2629800")
 
 	tmpl, err := template.ParseFiles("./index.html")
@@ -167,30 +165,76 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 
 	log.Traceln(input)
 
-	var rows *pgx.Rows
+	var query *bigquery.Query
 	switch {
 	case hasASN && !hasPrefix:
-		rows, err = db.Query(stmtMap["asnonly"].SQL, inputStore.Asn)
+		query = client.Query(`SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM historical-roas.historical.roas_arr
+		WHERE asn = @asn`)
+
 	case !hasASN && hasPrefix:
-		rows, err = db.Query(stmtMap["prefixonly"].SQL, inputStore.Prefix, inputStore.Subnet)
+		query = client.Query(`SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM historical-roas.historical.roas_arr
+		WHERE prefix = @prefix AND mask = @mask`)
 	case hasASN && hasPrefix:
-		rows, err = db.Query(stmtMap["prefixandasn"].SQL, inputStore.Asn, inputStore.Prefix, inputStore.Subnet)
+		query = client.Query(`SELECT asn, prefix, mask, maxlen, ta, inserttimes FROM historical-roas.historical.roas_arr
+		WHERE asn = @asn AND prefix = @prefix AND mask = @mask`)
 	}
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name:  "asn",
+			Value: inputStore.Asn,
+		},
+		{
+			Name:  "prefix",
+			Value: inputStore.Prefix,
+		},
+		{
+			Name:  "mask",
+			Value: inputStore.Subnet,
+		},
+	}
+	job, err := query.Run(ctx)
 	if err != nil {
-		ErrorHandler(w, r, 500, "lookup fail", err)
+		ErrorHandler(w, r, 500, "Error with query", err)
 		return
 	}
 
+	status, err := job.Wait(ctx)
+	if err := status.Err(); err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
+	}
+
+	it, err := job.Read(ctx)
+	if err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
+	}
 	var resultsarr pb.ResultArr
-	for rows.Next() {
-		var results pb.ResultsFromDB
-		// asn, prefix, mask, maxlen, ta, inserttimes
-		var intime []time.Time
-		err = rows.Scan(&results.ASN, &results.Prefix, &results.Mask, &results.Maxlen, &results.Ta, &intime)
-		if err != nil {
-			ErrorHandler(w, r, 500, "idk couldnt convert sql to obj", err)
-			return
+	for {
+		var row []bigquery.Value
+		err := it.Next(&row)
+		if err == iterator.Done {
+			break
 		}
+		if err != nil {
+			ErrorHandler(w, r, 500, "Error with query", err)
+			continue
+		}
+		var intime []time.Time
+		var buf = row[5].([]bigquery.Value)
+
+		for _, t := range buf {
+			intime = append(intime, t.(time.Time))
+		}
+
+		var results = pb.ResultsFromDB{
+			ASN:    row[0].(string),       // this
+			Prefix: row[1].(string),       // is
+			Mask:   int32(row[2].(int64)), // stupid
+			Maxlen: int32(row[3].(int64)), // I hate you,
+			Ta:     row[4].(string),       // Google
+		}
+
 		for _, i := range intime {
 			results.Unixtimearr = append(results.Unixtimearr, (i.Unix()))
 		}
@@ -231,19 +275,17 @@ func convInToStored(i inputROA) storedROA {
 }
 
 func pullToDB(w http.ResponseWriter, r *http.Request) {
-	db, err := pgx.Connect(pgx.ConnConfig{
-		Host:     dbip,
-		User:     "postgres",
-		Password: dbpass,
-		Database: "roas",
-	})
-	if err != nil {
-		log.Fatalln(err)
-	}
 
 	// see if there has been an update within 55 mins
-	var lastIn time.Time
-	db.QueryRow(stmtMap["55mincheck"].SQL).Scan(&lastIn)
+	query := client.Query("SELECT LAST_MODIFIED_TIME FROM INFORMATION_SCHEMA.SCHEMATA")
+	row, _ := query.Read(context.Background())
+	var time_row []bigquery.Value
+	err := row.Next(&time_row)
+	if err != nil {
+		ErrorHandler(w, r, 500, "Cant get last edit time", err)
+	}
+	lastIn := time_row[0].(time.Time)
+
 	if lastIn.Add(55 * time.Minute).After(time.Now()) {
 		log.Traceln("Record added in last 55 mins")
 		ErrorHandler(w, r, 401, "already done", nil)
@@ -263,29 +305,65 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a DB Transaction, one atomic change with many rows inserted.
-	txn, err := db.Begin()
+	inserter := client.Dataset("historical-roas:historical").Table("roas_arr").Inserter()
+
+	var stored = make(map[string]struct{})
+
+	currentQuery := client.Query(`SELECT asn, ta, prefix, mask, maxlen FROM historical-roas.historical.roas_arr`)
+	ctx := context.Background()
+	job, err := currentQuery.Run(ctx)
 	if err != nil {
-		log.Fatalf("failed to create transation: %v", err)
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
 	}
 
-	// Create the cursor, which gets filled with the Exec statement inside the for loop.
-	// yes I dont need to prepare this in advance, it just looks neater to all put it down here.
-	ustmt, err := txn.Prepare("updatevals",
-		stmtMap["updatearray"].SQL)
-	if err != nil {
-		log.Fatalf("failed to create cursor: %v", err)
-	}
-	istmt, err := txn.Prepare("insertvals",
-		stmtMap["insertarray"].SQL)
-	if err != nil {
-		log.Fatalf("failed to create cursor: %v", err)
+	status, err := job.Wait(ctx)
+	if err := status.Err(); err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
 	}
 
-	now := time.Now()
-	//var debug uint
+	it, err := job.Read(ctx)
+	if err != nil {
+		ErrorHandler(w, r, 500, "Error with query", err)
+		return
+	}
+	var schema bigquery.Schema
+
+	for {
+		var row []bigquery.Value
+		err := it.Next(&row)
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			ErrorHandler(w, r, 500, "Error with query", err)
+			continue
+		}
+
+		stored[xhashes.MD5(fmt.Sprint(pb.ResultsFromDB{
+			ASN:    row[0].(string),
+			Ta:     row[1].(string),
+			Prefix: row[2].(string),
+			Mask:   int32(row[3].(int64)), // google, you are
+			Maxlen: int32(row[4].(int64)), // disgusting
+		}))] = struct{}{}
+
+		if schema == nil {
+
+			schema, err = bigquery.InferSchema(storedROAWithTime{})
+			if err != nil {
+				log.Errorln(err)
+				schema = nil
+			}
+		}
+	}
+
+	now := []time.Time{time.Now()}
+	var id int
 	//var in []storedROA
 	for _, i := range origIn.Roas {
+		id++
 		// shut up I know its not correct terminology
 		ipandmask := strings.Split(i.Prefix, "/")
 		// probably doesnt need error checking
@@ -298,16 +376,76 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Ta:        i.Ta,
 			Subnet:    mask,
 		})*/
-		ra, err := txn.Exec(ustmt.SQL, now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
-		if err != nil {
-			log.Errorln(err)
-			continue
-		}
-		if ra.RowsAffected() == 0 {
+		ctx := context.Background()
+
+		switch _, ok := stored[xhashes.MD5(fmt.Sprint(pb.ResultsFromDB{
+			ASN:    i.Asn,
+			Ta:     i.Ta,
+			Prefix: ipandmask[0],
+			Mask:   int32(mask),
+			Maxlen: int32(i.MaxLength),
+		}))]; ok {
+		case true:
+			log.Traceln("Updating row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
+			// is already stored
+			q := client.Query(`UPDATE historical-roas.historical.roas_arr
+			SET inserttimes = ARRAY_CONCAT(inserttimes, @now) WHERE
+			asn = @asn AND
+			ta = @ta AND
+			prefix = @prefix AND
+			mask = @mask AND
+			maxlen = @maxlen`)
+			q.Parameters = []bigquery.QueryParameter{
+				{
+					Name:  "asn",
+					Value: i.Asn,
+				},
+				{
+					Name:  "prefix",
+					Value: ipandmask[0],
+				},
+				{
+					Name:  "mask",
+					Value: mask,
+				},
+				{
+					Name:  "ta",
+					Value: i.Ta,
+				}, {
+					Name:  "maxlen",
+					Value: i.MaxLength,
+				},
+				{
+					Name:  "now",
+					Value: now,
+				},
+			}
+			job, err := q.Run(ctx)
+			if err != nil {
+				ErrorHandler(w, r, 500, "Error with query", err)
+				continue
+			}
+
+			status, _ := job.Wait(ctx)
+			if err := status.Err(); err != nil {
+				ErrorHandler(w, r, 500, "Error with query", err)
+				continue
+			}
+		case false:
 			log.Debugln("Insertting row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
 			// asn, prefix, maxlen, ta, mask, inserttimes
-			_, err = txn.Exec(istmt.SQL, i.Asn, ipandmask[0], i.MaxLength,
-				i.Ta, mask, []time.Time{now})
+			inserter.Put(ctx, bigquery.StructSaver{
+				Schema: schema,
+				Struct: &storedROAWithTime{
+					Asn:       i.Asn,
+					Ta:        i.Ta,
+					Prefix:    ipandmask[0],
+					Subnet:    mask,
+					MaxLength: i.MaxLength,
+					Times:     now,
+				},
+				InsertID: strconv.Itoa(id),
+			})
 			if err != nil {
 				log.Errorln(err)
 				continue
@@ -318,28 +456,6 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		//debug++
 
 	}
-
-	// All data is pending in the transaction, commit the transaction.
-	//_, err = stmt.Exec()
-	//if err != nil {
-	//		log.Fatalf("failed to commit downloaded data: %v", err)
-	//	}
-
-	// I am not bothering to pre-prepare this
-	txn.Exec("UPDATE last_modified SET time = $1;", now)
-
-	// idk I used this in legacy code using database/sql and this fixed it, it has no
-	// performance penalty so I frankly dont care
-	_, err = txn.Exec(";")
-	if err != nil {
-		log.Errorln(err)
-	}
-
-	if err := txn.Commit(); err != nil {
-		log.Fatalf("failed to commit and close the transaction: %v", err)
-	}
-
-	db.Close()
 
 }
 

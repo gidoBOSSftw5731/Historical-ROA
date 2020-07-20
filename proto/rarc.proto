@@ -30,3 +30,4 @@ message ResultsFromDBRFC3339 {
 message ResultArr {
     repeated ResultsFromDB results = 1;
 }
+
