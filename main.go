@@ -287,8 +287,8 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	}
 	lastIn := time_row[0].(time.Time)
 
-	if lastIn.Add(55 * time.Minute).Before(time.Now()) {
-		log.Traceln("Record added in last 55 mins")
+	if lastIn.Add(50 * time.Minute).After(time.Now()) {
+		log.Traceln("Record added in last 50 mins")
 		ErrorHandler(w, r, 401, "already done", nil)
 		return
 	}
