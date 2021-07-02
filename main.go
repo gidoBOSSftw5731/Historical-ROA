@@ -282,16 +282,19 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	row, _ := query.Read(context.Background())
 	var time_row []bigquery.Value
 	err := row.Next(&time_row)
-	if err != nil {
-		ErrorHandler(w, r, 500, "Cant get last edit time", err)
+	switch err {
+	case nil:
+		lastIn := time_row[0].(time.Time)
+		if lastIn.Add(50 * time.Minute).After(time.Now()) {
+			log.Traceln("Record added in last 50 mins")
+			ErrorHandler(w, r, 401, "already done", nil)
+			return
+		}
+	default:
+		//ErrorHandler(w, r, 500, "Cant get last edit time", err)
+		log.Errorln("Cant get last edit time")
 	}
-	lastIn := time_row[0].(time.Time)
 
-	if lastIn.Add(50 * time.Minute).After(time.Now()) {
-		log.Traceln("Record added in last 50 mins")
-		ErrorHandler(w, r, 401, "already done", nil)
-		return
-	}
 	w.WriteHeader(200)
 	fmt.Fprintln(w, "ok")
 	http.Error(w, "can't hijack rw", 200)
@@ -311,7 +314,7 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 
 	schema, err := bigquery.InferSchema(storedROAWithTime{})
 	if err != nil {
-		ErrorHandler(w, r, 500, "Cant get last edit time", err)
+		ErrorHandler(w, r, 500, "failed to infer schema", err)
 		return
 	}
 
@@ -538,7 +541,7 @@ func downloadRARC() (*inputROAArr, error) {
 func ErrorHandler(resp http.ResponseWriter, req *http.Request, status int, alert string, err error) {
 	log.Errorln(err)
 	resp.WriteHeader(status)
-	log.Error("artifical http error: ", status)
+	log.Error("artifical http error: ", status, alert)
 	fmt.Fprintf(resp, "You have found an error! This error is of type %v. Built in alert: \n'%v',\n Would you like a <a href='https://http.cat/%v'>cat</a> or a <a href='https://httpstatusdogs.com/%v'>dog?</a>",
 		status, alert, status, status)
 }
