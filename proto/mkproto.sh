@@ -1,1 +1,1 @@
-/usr/bin/protoc rarc.proto --go_out=. -I=.
+/usr/bin/protoc rarc.proto --go_out=.

@@ -238,6 +238,7 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 
 		for _, i := range intime {
 			results.Unixtimearr = append(results.Unixtimearr, (i.Unix()))
+			results.RFC3339Timearr = append(results.RFC3339Timearr, i.Format(time.RFC3339))
 		}
 
 		results.Fullprefix = fmt.Sprintf("%v/%v", results.Prefix, results.Mask)
@@ -252,7 +253,6 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		resultsarr.Results = append(resultsarr.Results, &results)
 	}
 	fmt.Fprintln(w, protojson.Format(&resultsarr))
-
 }
 
 // convert input data into stored data
