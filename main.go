@@ -149,7 +149,11 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if input.ParseCIDR != "" {
-		_, n, _ := net.ParseCIDR(input.Prefix)
+		_, n, err := net.ParseCIDR(input.Prefix)
+		if err != nil {
+			tmpl.Execute(w, nil)
+			return
+		}
 		input.Prefix = n.String()
 	}
 
