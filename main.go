@@ -83,7 +83,7 @@ const (
 
 func main() {
 	// enable logging
-	log.SetCallDepth(4)
+	log.SetCallDepth(2)
 	// set http port
 	port := os.Getenv("PORT")
 	if port == "" {
