@@ -390,11 +390,15 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	log.Traceln("making buf table")
 	// make buf table
 
-	client.Dataset("historical").Table("buf").Delete(ctx)
+	err = client.Dataset("historical").Table("buf").Delete(ctx)
+	if err != nil {
+		log.Errorln("Error Deleting buf: ", err)
+		err = nil
+	}
 	err = client.Dataset("historical").Table("buf").Create(ctx,
 		&bigquery.TableMetadata{Schema: schema})
 	if err != nil {
-		ErrorHandler(w, r, 500, "error putting updates", err)
+		ErrorHandler(w, r, 500, "error creating buf", err)
 		return
 	}
 
