@@ -405,7 +405,7 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	tmpinserter := client.Dataset("historical").Table("buf").Inserter()
 
 	var divided [][]*storedROAWithTime
-	chunk := 1000
+	chunk := 950
 	for i := 0; i < len(in); i += chunk {
 		end := i + chunk
 		if end > len(in) {
@@ -414,6 +414,10 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 		divided = append(divided, in[i:end])
 	}
 	for _, i := range divided {
+		if len(i) == 0 {
+			log.Errorln("Divided array had len 0")
+			break
+		}
 		err = tmpinserter.Put(ctx, i)
 		if err != nil {
 			ErrorHandler(w, r, 500, "error putting updates", err)
