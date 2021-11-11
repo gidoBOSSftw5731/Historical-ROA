@@ -310,7 +310,7 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.Background()
 
-	inserter := client.Dataset("historical").Table("roas_arr").Inserter()
+	//inserter := client.Dataset("historical").Table("roas_arr").Inserter()
 
 	schema, err := bigquery.InferSchema(storedROAWithTime{})
 	if err != nil {
@@ -380,76 +380,7 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 			Subnet:    mask,
 		})*/
 
-		switch _, ok := stored[xhashes.MD5(fmt.Sprint(pb.ResultsFromDB{
-			ASN:    i.Asn,
-			Ta:     i.Ta,
-			Prefix: ipandmask[0],
-			Mask:   int32(mask),
-			Maxlen: int32(i.MaxLength),
-		}))]; ok {
-		case true:
-			log.Traceln("Updating row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
-			// is already stored
-			in = append(in, &storedROAWithTime{i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask, now})
-			/*
-				q := client.Query(`UPDATE historical-roas.historical.roas_arr
-				SET inserttimes = ARRAY_CONCAT(inserttimes, @now) WHERE
-				asn = @asn AND
-				ta = @ta AND
-				prefix = @prefix AND
-				mask = @mask AND
-				maxlen = @maxlen`)
-				q.Parameters = []bigquery.QueryParameter{
-					{
-						Name:  "asn",
-						Value: i.Asn,
-					},
-					{
-						Name:  "prefix",
-						Value: ipandmask[0],
-					},
-					{
-						Name:  "mask",
-						Value: mask,
-					},
-					{
-						Name:  "ta",
-						Value: i.Ta,
-					}, {
-						Name:  "maxlen",
-						Value: i.MaxLength,
-					},
-					{
-						Name:  "now",
-						Value: now,
-					},
-				}
-
-				_, err := q.Run(ctx)
-				if err != nil {
-					ErrorHandler(w, r, 500, "Error with query", err)
-					return
-				}*/
-		case false:
-			log.Debugln("Insertting row: ", now, i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask)
-			// asn, prefix, maxlen, ta, mask, inserttimes
-			inserter.Put(ctx, bigquery.StructSaver{
-				Schema: schema,
-				Struct: &storedROAWithTime{
-					Asn:       i.Asn,
-					Ta:        i.Ta,
-					Prefix:    ipandmask[0],
-					Subnet:    mask,
-					MaxLength: i.MaxLength,
-					Times:     now,
-				},
-				InsertID: strconv.Itoa(id),
-			})
-			if err != nil {
-				log.Errorln(err)
-				return
-			}
-		}
+		in = append(in, &storedROAWithTime{i.Asn, ipandmask[0], i.MaxLength, i.Ta, mask, now})
 
 		//go log.Traceln(debug)
 		//debug++
@@ -493,8 +424,10 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 	ON 	b.Asn = arr.asn AND arr.maxlen = b.MaxLength
 	AND b.Prefix = arr.prefix AND arr.ta = b.Ta
 	AND b.Subnet = arr.mask
-WHEN MATCHED THEN
-  UPDATE SET inserttimes = ARRAY_CONCAT(b.times, arr.inserttimes)`)
+	WHEN MATCHED THEN
+ 		UPDATE SET inserttimes = ARRAY_CONCAT(b.times, arr.inserttimes)
+	WHEN NOT MATCHED BY TARGET THEN
+		INSERT (asn, maxlen, prefix, ta, mask, inserttimes) VALUES (b.Asn, b.MaxLength, b.Prefix, b.Ta, b.Subnet, b.times)`)
 	job, err = query.Run(ctx)
 	if err != nil {
 		ErrorHandler(w, r, 500, "Error with query", err)
