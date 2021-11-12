@@ -427,8 +427,8 @@ func pullToDB(w http.ResponseWriter, r *http.Request) {
 
 	// now make one plus one equal 2
 	// historical-roas.historical.roas_arr
-	query = client.Query(`MERGE historical-roas.historical.roas_arr arr
-	USING historical-roas.historical.buf b
+	query = client.Query(`MERGE historical.roas_arr arr
+	USING historical.buf b
 	ON 	b.Asn = arr.asn AND arr.maxlen = b.MaxLength
 	AND b.Prefix = arr.prefix AND arr.ta = b.Ta
 	AND b.Subnet = arr.mask
