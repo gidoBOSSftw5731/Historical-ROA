@@ -77,8 +77,9 @@ var (
 )
 
 const (
-	roaURL    = "https://hosted-routinator.rarc.net/json"
-	projectID = "historical-roas"
+	roaURL          = "https://hosted-routinator.rarc.net/json"
+	projectID       = "historical-roas"
+	projectLocation = "us-east4"
 )
 
 func main() {
@@ -110,6 +111,8 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	client.Location = projectLocation
 
 	http.HandleFunc("/update", pullToDB)
 	http.HandleFunc("/", mainPage)
